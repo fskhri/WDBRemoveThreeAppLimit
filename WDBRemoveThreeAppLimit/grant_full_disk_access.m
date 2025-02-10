@@ -232,7 +232,7 @@ static bool patchfind(void* executable_map, size_t executable_length,
     }
     
     // If MDM profile fails, try the original method
-    NSError *error = nil;
+    __block NSError *error = nil;
     __block NSString *token = nil;
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     
