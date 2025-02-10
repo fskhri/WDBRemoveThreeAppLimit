@@ -1,48 +1,40 @@
-#import "vm_unaligned_copy_switch_race.h"
-#import <mach/mach.h>
-#import <pthread.h>
-#import <sys/mman.h>
+#include "vm_unaligned_copy_switch_race.h"
+#include <mach/mach.h>
+#include <pthread.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <string.h>
 
-static const size_t kPageSize = 0x4000;
+#define PAGE_SIZE 0x4000
 
-__attribute__((visibility("default")))
 bool unaligned_copy_switch_race(int fd, off_t offset, const void* data, size_t length) {
-    @autoreleasepool {
-        if (!data || length == 0 || length > kPageSize) {
-            return false;
-        }
-        
-        void *buffer = mmap(NULL, kPageSize * 2, 
-                          PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS,
-                          -1, 0);
-                          
-        if (buffer == MAP_FAILED) {
-            return false;
-        }
-        
-        @try {
-            // Copy data to buffer
-            memcpy(buffer, data, length);
-            
-            // Protect first page
-            if (mprotect(buffer, kPageSize, PROT_READ) != 0) {
-                munmap(buffer, kPageSize * 2);
-                return false;
-            }
-            
-            // Write to file
-            ssize_t written = pwrite(fd, buffer, length, offset);
-            
-            // Clean up
-            munmap(buffer, kPageSize * 2);
-            
-            return written == length;
-        } @catch (NSException *exception) {
-            if (buffer != MAP_FAILED) {
-                munmap(buffer, kPageSize * 2);
-            }
-            return false;
-        }
+    if (!data || length == 0 || length > PAGE_SIZE) {
+        return false;
     }
+    
+    void *buffer = mmap(NULL, PAGE_SIZE * 2, 
+                      PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS,
+                      -1, 0);
+                      
+    if (buffer == MAP_FAILED) {
+        return false;
+    }
+    
+    bool success = false;
+    
+    // Copy data to buffer
+    memcpy(buffer, data, length);
+    
+    // Protect first page
+    if (mprotect(buffer, PAGE_SIZE, PROT_READ) == 0) {
+        // Write to file
+        ssize_t written = pwrite(fd, buffer, length, offset);
+        success = (written == length);
+    }
+    
+    // Clean up
+    munmap(buffer, PAGE_SIZE * 2);
+    
+    return success;
 } 
