@@ -215,8 +215,6 @@ static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
         }
         completion(extension_token);
     });
-    
-    xpc_release(message);
 }
 
 static NSData* patchTCCD(void* executableMap, size_t executableLength) {
