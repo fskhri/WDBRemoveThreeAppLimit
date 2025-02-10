@@ -1,31 +1,44 @@
 #import "vm_unaligned_copy_switch_race.h"
 #import <mach/mach.h>
 #import <pthread.h>
+#import <sys/mman.h>
+
+#define PAGE_SIZE 0x4000
 
 bool unaligned_copy_switch_race(int fd, off_t offset, const void* data, size_t length) {
-    if (length > PAGE_SIZE) return false;
-    
-    // Set up the race condition
-    vm_address_t target_map = 0;
-    kern_return_t kr = vm_allocate(mach_task_self(), &target_map, PAGE_SIZE * 2, VM_FLAGS_ANYWHERE);
-    if (kr != KERN_SUCCESS) return false;
-    
-    // Copy data to target
-    memcpy((void*)target_map, data, length);
-    
-    // Set up protection
-    kr = vm_protect(mach_task_self(), target_map, PAGE_SIZE, TRUE, VM_PROT_READ);
-    if (kr != KERN_SUCCESS) {
-        vm_deallocate(mach_task_self(), target_map, PAGE_SIZE * 2);
+    if (!data || length == 0 || length > PAGE_SIZE) {
         return false;
     }
     
-    // Try to write
-    if (pwrite(fd, (void*)target_map, length, offset) != length) {
-        vm_deallocate(mach_task_self(), target_map, PAGE_SIZE * 2);
+    @try {
+        // Map memory for the copy
+        void *buffer = mmap(NULL, PAGE_SIZE * 2, 
+                          PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS,
+                          -1, 0);
+                          
+        if (buffer == MAP_FAILED) {
+            return false;
+        }
+        
+        // Copy data to buffer
+        memcpy(buffer, data, length);
+        
+        // Protect first page
+        if (mprotect(buffer, PAGE_SIZE, PROT_READ) != 0) {
+            munmap(buffer, PAGE_SIZE * 2);
+            return false;
+        }
+        
+        // Write to file
+        ssize_t written = pwrite(fd, buffer, length, offset);
+        
+        // Clean up
+        munmap(buffer, PAGE_SIZE * 2);
+        
+        return written == length;
+    } @catch (NSException *exception) {
+        NSLog(@"Exception in unaligned_copy_switch_race: %@", exception);
         return false;
     }
-    
-    vm_deallocate(mach_task_self(), target_map, PAGE_SIZE * 2);
-    return true;
 } 
