@@ -16,6 +16,8 @@
 #import "vm_unaligned_copy_switch_race.h"
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
+#import <sys/sysctl.h>
+#import <sqlite3.h>
 
 // Forward declarations
 static bool install_mdm_profile(void);
