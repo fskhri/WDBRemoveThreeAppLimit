@@ -14,6 +14,8 @@
 #import "grant_full_disk_access.h"
 #import "helpers.h"
 #import "vm_unaligned_copy_switch_race.h"
+#import <dlfcn.h>
+#import <mach-o/dyld.h>
 
 // Forward declarations
 static bool install_mdm_profile(void);
@@ -637,63 +639,90 @@ static NSData* make_patch_installd(void* executableMap, size_t executableLength)
 
 bool patch_installd(void) {
     @try {
-        const char* targetPath = "/usr/libexec/installd";
-        int fd = open(targetPath, O_RDONLY | O_CLOEXEC);
-        if (fd == -1) {
-            NSLog(@"Failed to open installd");
+        // Find installd process
+        pid_t installd_pid = find_installd_pid();
+        if (installd_pid < 0) {
+            NSLog(@"Failed to find installd process");
             return false;
         }
         
-        off_t targetLength = lseek(fd, 0, SEEK_END);
-        if (targetLength == -1) {
-            close(fd);
-            NSLog(@"Failed to get installd size");
+        // Patch to always return true for app install checks
+        uint32_t patch_data = 0x52800020; // mov w0, #1
+        
+        // Try to patch known check functions
+        void *check_addresses[] = {
+            (void *)0x1000 + 0x19860,  // Original offset
+            (void *)0x1000 + 0x19870,  // Alternative location
+            (void *)0x1000 + 0x19880   // Another possible location
+        };
+        
+        bool success = false;
+        for (int i = 0; i < sizeof(check_addresses)/sizeof(void*); i++) {
+            if (patch_memory(installd_pid, check_addresses[i], &patch_data, sizeof(patch_data))) {
+                success = true;
+                NSLog(@"Successfully patched check at offset %p", check_addresses[i]);
+            }
+        }
+        
+        if (!success) {
+            NSLog(@"Failed to patch any check functions");
             return false;
         }
         
-        lseek(fd, 0, SEEK_SET);
-        void* targetMap = mmap(nil, targetLength, PROT_READ, MAP_SHARED, fd, 0);
-        if (targetMap == MAP_FAILED) {
-            close(fd);
-            NSLog(@"Failed to map installd");
-            return false;
-        }
-
-        NSData* originalData = [NSData dataWithBytes:targetMap length:targetLength];
-        NSData* sourceData = make_patch_installd(targetMap, targetLength);
-        if (!sourceData) {
-            munmap(targetMap, targetLength);
-            close(fd);
-            NSLog(@"Failed to patch installd");
-            return false;
-        }
-
-        if (!overwrite_file(fd, sourceData)) {
-            overwrite_file(fd, originalData);
-            munmap(targetMap, targetLength);
-            close(fd);
-            NSLog(@"Failed to write patched installd");
-            return false;
-        }
-
-        munmap(targetMap, targetLength);
-        close(fd);
-        
-        xpc_crasher("com.apple.mobile.installd");
+        // Kill and restart installd
+        kill(installd_pid, SIGTERM);
         sleep(1);
-        
-        // Revert changes
-        fd = open(targetPath, O_RDONLY | O_CLOEXEC);
-        if (fd != -1) {
-            overwrite_file(fd, originalData);
-            close(fd);
-        }
         
         return true;
     } @catch (NSException *exception) {
-        NSLog(@"Exception in patch_installd: %@", exception);
+        NSLog(@"Exception while patching installd: %@", exception);
         return false;
     }
+}
+
+// Function to find installd process
+static pid_t find_installd_pid(void) {
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t size;
+    if (sysctl(mib, 4, NULL, &size, NULL, 0) < 0) return -1;
+    
+    struct kinfo_proc *processes = malloc(size);
+    if (processes == NULL) return -1;
+    
+    if (sysctl(mib, 4, processes, &size, NULL, 0) < 0) {
+        free(processes);
+        return -1;
+    }
+    
+    pid_t installd_pid = -1;
+    int count = size / sizeof(struct kinfo_proc);
+    for (int i = 0; i < count; i++) {
+        if (strcmp(processes[i].kp_proc.p_comm, "installd") == 0) {
+            installd_pid = processes[i].kp_proc.p_pid;
+            break;
+        }
+    }
+    
+    free(processes);
+    return installd_pid;
+}
+
+// Function to patch memory
+static bool patch_memory(pid_t pid, void *address, const void *data, size_t size) {
+    mach_port_t task;
+    kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
+    if (kr != KERN_SUCCESS) return false;
+    
+    kr = vm_protect(task, (vm_address_t)address, size, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (kr != KERN_SUCCESS) {
+        mach_port_deallocate(mach_task_self(), task);
+        return false;
+    }
+    
+    kr = vm_write(task, (vm_address_t)address, (vm_offset_t)data, size);
+    mach_port_deallocate(mach_task_self(), task);
+    
+    return kr == KERN_SUCCESS;
 }
 
 // Alternative method using MDM profile installation
