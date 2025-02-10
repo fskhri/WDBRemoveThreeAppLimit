@@ -35,6 +35,9 @@ jobs:
           GCC_OPTIMIZATION_LEVEL=0 \
           ONLY_ACTIVE_ARCH=YES \
           DEBUG_INFORMATION_FORMAT=dwarf \
+          HEADER_SEARCH_PATHS="$(SDKROOT)/usr/include $(SDKROOT)/usr/include/mach $(SDKROOT)/usr/include/mach-o" \
+          SYSTEM_HEADER_SEARCH_PATHS="$(SDKROOT)/usr/include" \
+          CLANG_MODULES_AUTOLINK=NO \
           CONFIGURATION_BUILD_DIR=build/Release-iphoneos
           
     - name: List Build Directory
@@ -71,4 +74,7 @@ jobs:
           GCC_OPTIMIZATION_LEVEL=0 \
           ONLY_ACTIVE_ARCH=YES \
           DEBUG_INFORMATION_FORMAT=dwarf \
+          HEADER_SEARCH_PATHS="$(SDKROOT)/usr/include $(SDKROOT)/usr/include/mach $(SDKROOT)/usr/include/mach-o" \
+          SYSTEM_HEADER_SEARCH_PATHS="$(SDKROOT)/usr/include" \
+          CLANG_MODULES_AUTOLINK=NO \
           CODE_SIGNING_ALLOWED=NO 

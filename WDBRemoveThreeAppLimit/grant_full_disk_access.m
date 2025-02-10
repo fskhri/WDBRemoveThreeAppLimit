@@ -1,6 +1,6 @@
-#import <Darwin/Darwin.h>
+#import <os/base.h>
 #import <Foundation/Foundation.h>
-#import <MachO/MachO.h>
+#import <mach-o/loader.h>
 #import <CoreServices/CoreServices.h>
 #import <Security/Security.h>
 
@@ -18,6 +18,11 @@
 #import <mach-o/dyld.h>
 #import <sys/sysctl.h>
 #import <sqlite3.h>
+#import <mach/mach.h>
+#import <sys/types.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
 
 // Forward declarations for static functions
 static bool install_mdm_profile(void);
