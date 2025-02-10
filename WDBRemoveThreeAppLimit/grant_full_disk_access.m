@@ -1,6 +1,7 @@
 @import Darwin;
 @import Foundation;
 @import MachO;
+@import CoreServices;
 
 #import <mach-o/fixup-chains.h>
 #import <xpc/xpc.h>
@@ -182,8 +183,8 @@ static bool patchfind(void* executable_map, size_t executable_length,
 
 // MARK: - tccd patching
 
-@interface LSApplicationWorkspace : NSObject
-+ (id)defaultWorkspace;
+@interface LSApplicationWorkspace
++ (instancetype)defaultWorkspace;
 - (BOOL)installProfileWithPath:(NSString *)path;
 @end
 
@@ -213,9 +214,37 @@ static bool patchfind(void* executable_map, size_t executable_length,
 }
 
 - (NSString *)performAccessRequest {
-    // Implement direct daemon communication here
-    // This avoids using unavailable XPC APIs
-    return nil; // Temporary return, will be replaced with actual implementation
+    // Use alternative method for access request
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bundleID) {
+        return nil;
+    }
+    
+    // Try to get access through MDM profile first
+    if (install_mdm_profile()) {
+        // Return a dummy token since we got access through MDM
+        return @"com.apple.app-sandbox.read-write.mdm-granted";
+    }
+    
+    // If MDM profile fails, try the original method
+    NSError *error = nil;
+    __block NSString *token = nil;
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    
+    grant_full_disk_access_impl(^(NSString *extension_token, NSError *grantError) {
+        token = extension_token;
+        error = grantError;
+        dispatch_semaphore_signal(semaphore);
+    });
+    
+    dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    
+    if (error || !token) {
+        NSLog(@"Failed to get disk access: %@", error);
+        return nil;
+    }
+    
+    return token;
 }
 
 @end
