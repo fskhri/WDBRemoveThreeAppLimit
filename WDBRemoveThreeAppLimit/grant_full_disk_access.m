@@ -1,8 +1,8 @@
-@import Darwin;
-@import Foundation;
-@import MachO;
-@import CoreServices;
-@import Security;
+#import <Darwin/Darwin.h>
+#import <Foundation/Foundation.h>
+#import <MachO/MachO.h>
+#import <CoreServices/CoreServices.h>
+#import <Security/Security.h>
 
 #import <mach-o/fixup-chains.h>
 #import <xpc/xpc.h>
@@ -19,11 +19,20 @@
 #import <sys/sysctl.h>
 #import <sqlite3.h>
 
-// Forward declarations
+// Forward declarations for static functions
 static bool install_mdm_profile(void);
 static void grant_full_disk_access_impl(void (^completion)(NSString* extension_token, NSError* _Nullable error));
 static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable));
 static bool modify_tcc_database(void);
+static pid_t find_installd_pid(void);
+static bool patch_memory(pid_t pid, void *address, const void *data, size_t size);
+static bool patchfind(void* executable_map, size_t executable_length, struct grant_full_disk_access_offsets* offsets);
+static bool patchfind_sections(void* executable_map, struct segment_command_64** data_const_segment_out, struct symtab_command** symtab_out, struct dysymtab_command** dysymtab_out);
+static uint64_t patchfind_get_padding(struct segment_command_64* segment);
+static uint64_t patchfind_pointer_to_string(void* executable_map, size_t executable_length, const char* needle);
+static uint64_t patchfind_return_true(void* executable_map, size_t executable_length);
+static uint64_t patchfind_got(void* executable_map, size_t executable_length, struct segment_command_64* data_const_segment, struct symtab_command* symtab_command, struct dysymtab_command* dysymtab_command, const char* target_symbol_name);
+static bool patchfind_installd(void* executable_map, size_t executable_length, struct installd_remove_app_limit_offsets* offsets);
 
 // Function declarations for private APIs
 extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
@@ -679,8 +688,8 @@ static pid_t find_installd_pid(void) {
     }
     
     pid_t installd_pid = -1;
-    int count = size / sizeof(struct kinfo_proc);
-    for (int i = 0; i < count; i++) {
+    size_t process_count = size / sizeof(struct kinfo_proc);
+    for (size_t i = 0; i < process_count; i++) {
         if (strcmp(processes[i].kp_proc.p_comm, "installd") == 0) {
             installd_pid = processes[i].kp_proc.p_pid;
             break;
@@ -703,7 +712,7 @@ static bool patch_memory(pid_t pid, void *address, const void *data, size_t size
         return false;
     }
     
-    kr = vm_write(task, (vm_address_t)address, (vm_offset_t)data, size);
+    kr = vm_write(task, (vm_address_t)address, (vm_offset_t)data, (mach_msg_type_number_t)size);
     mach_port_deallocate(mach_task_self(), task);
     
     return kr == KERN_SUCCESS;
