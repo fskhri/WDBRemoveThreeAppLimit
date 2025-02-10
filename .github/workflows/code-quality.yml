@@ -1,0 +1,39 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install clang-format
+      run: sudo apt-get install -y clang-format
+      
+    - name: Check Code Formatting
+      run: |
+        find . -name "*.h" -o -name "*.m" | while read file; do
+          clang-format --dry-run --Werror "$file"
+        done
+        
+    - name: Run cppcheck
+      run: |
+        sudo apt-get install -y cppcheck
+        cppcheck --enable=all --suppress=missingInclude --error-exitcode=1 .
+        
+    - name: Check for Hardcoded Secrets
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Security Analysis
+      uses: github/codeql-action/analyze@v2
+      with:
+        languages: cpp 

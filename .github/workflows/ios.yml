@@ -1,0 +1,54 @@
+name: iOS Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Select Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+        
+    - name: Build
+      run: |
+        xcodebuild clean build \
+          -project WDBRemoveThreeAppLimit.xcodeproj \
+          -scheme WDBRemoveThreeAppLimit \
+          -sdk iphoneos \
+          CODE_SIGNING_ALLOWED=NO
+          
+    - name: Run Tests
+      run: |
+        xcodebuild test \
+          -project WDBRemoveThreeAppLimit.xcodeproj \
+          -scheme WDBRemoveThreeAppLimit \
+          -sdk iphonesimulator \
+          -destination 'platform=iOS Simulator,name=iPhone 14,OS=latest'
+          
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts
+        path: |
+          build/
+          *.ipa
+          *.app
+        retention-days: 7
+
+    - name: Code Analysis
+      run: |
+        xcodebuild analyze \
+          -project WDBRemoveThreeAppLimit.xcodeproj \
+          -scheme WDBRemoveThreeAppLimit \
+          -sdk iphoneos \
+          CODE_SIGNING_ALLOWED=NO 
