@@ -21,29 +21,30 @@ jobs:
         
     - name: Build
       run: |
-        xcodebuild clean archive \
+        xcodebuild clean build \
           -project WDBRemoveThreeAppLimit.xcodeproj \
           -scheme WDBRemoveThreeAppLimit \
+          -configuration Release \
           -sdk iphoneos \
-          -archivePath $PWD/build/WDBRemoveThreeAppLimit.xcarchive \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
           
-    - name: Export IPA
+    - name: Create IPA
       run: |
-        xcodebuild -exportArchive \
-          -archivePath $PWD/build/WDBRemoveThreeAppLimit.xcarchive \
-          -exportOptionsPlist exportOptions.plist \
-          -exportPath $PWD/build \
-          CODE_SIGNING_ALLOWED=NO
+        cd build/Release-iphoneos
+        mkdir Payload
+        cp -r WDBRemoveThreeAppLimit.app Payload/
+        zip -r WDBRemoveThreeAppLimit.ipa Payload
           
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: build-artifacts
         path: |
-          **/Debug-iphoneos/*.app
-          **/Debug-iphoneos/*.dylib
-          build/*.ipa
+          build/Release-iphoneos/*.ipa
+          build/Release-iphoneos/*.app
+          build/Release-iphoneos/*.dylib
         retention-days: 7
 
     - name: Code Analysis
