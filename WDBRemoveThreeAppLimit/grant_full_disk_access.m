@@ -3,7 +3,6 @@
 @import MachO;
 
 #import <mach-o/fixup-chains.h>
-#import <xpc/xpc.h>
 // you'll need helpers.m from Ian Beer's write_no_write and vm_unaligned_copy_switch_race.m from
 // WDBFontOverwrite
 // Also, set an NSAppleMusicUsageDescription in Info.plist (can be anything)
@@ -13,13 +12,13 @@
 #import "helpers.h"
 #import "vm_unaligned_copy_switch_race.h"
 
-// Forward declarations
-static bool patchfind_ios16_7_10(void* executable_map, size_t executable_length,
-                               struct grant_full_disk_access_offsets* offsets);
-
+typedef NSObject* xpc_object_t;
+typedef xpc_object_t xpc_connection_t;
 typedef void (^xpc_handler_t)(xpc_object_t object);
 xpc_object_t xpc_dictionary_create(const char* const _Nonnull* keys,
                                    xpc_object_t _Nullable const* values, size_t count);
+xpc_connection_t xpc_connection_create_mach_service(const char* name, dispatch_queue_t targetq,
+                                                    uint64_t flags);
 void xpc_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler);
 void xpc_connection_resume(xpc_connection_t connection);
 void xpc_connection_send_message_with_reply(xpc_connection_t connection, xpc_object_t message,
