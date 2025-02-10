@@ -32,9 +32,8 @@ jobs:
       with:
         name: build-artifacts
         path: |
-          build/
-          *.ipa
-          *.app
+          ~/Library/Developer/Xcode/DerivedData/**/Build/Products/**/*.app
+          ~/Library/Developer/Xcode/DerivedData/**/Build/Products/**/*.ipa
         retention-days: 7
 
     - name: Code Analysis
