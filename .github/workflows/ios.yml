@@ -29,6 +29,7 @@ jobs:
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO \
+          SWIFT_OPTIMIZATION_LEVEL="-Onone" \
           CONFIGURATION_BUILD_DIR=build/Release-iphoneos
           
     - name: List Build Directory
@@ -59,4 +60,5 @@ jobs:
           -project WDBRemoveThreeAppLimit.xcodeproj \
           -scheme WDBRemoveThreeAppLimit \
           -sdk iphoneos \
+          SWIFT_OPTIMIZATION_LEVEL="-Onone" \
           CODE_SIGNING_ALLOWED=NO 
