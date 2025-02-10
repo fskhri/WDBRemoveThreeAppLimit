@@ -20,7 +20,6 @@ static bool install_mdm_profile(void);
 static void grant_full_disk_access_impl(void (^completion)(NSString* extension_token, NSError* _Nullable error));
 static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable));
 static bool modify_tcc_database(void);
-static bool patch_installd(void);
 
 // Function declarations for private APIs
 extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
