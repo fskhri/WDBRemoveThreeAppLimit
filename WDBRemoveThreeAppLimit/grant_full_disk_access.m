@@ -187,7 +187,7 @@ static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
     static NSXPCConnection *sharedConnection;
     
     dispatch_once(&onceToken, ^{
-        sharedConnection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd"];
+        sharedConnection = [[NSXPCConnection alloc] initWithServiceName:@"com.apple.tccd"];
         sharedConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
         [sharedConnection resume];
     });
