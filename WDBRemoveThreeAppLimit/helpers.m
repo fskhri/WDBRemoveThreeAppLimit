@@ -5,26 +5,52 @@
 #import "helpers.h"
 #import <xpc/xpc.h>
 #import <sys/sysctl.h>
+#include <errno.h>
+#include <unistd.h>
 
 char* get_temp_file_path(void) {
-  return strdup([[NSTemporaryDirectory() stringByAppendingPathComponent:@"AAAAs"] fileSystemRepresentation]);
+    @autoreleasepool {
+        return strdup([[NSTemporaryDirectory() stringByAppendingPathComponent:@"AAAAs"] fileSystemRepresentation]);
+    }
 }
 
 // create a read-only test file we can target:
 char* set_up_tmp_file(void) {
-  char* path = get_temp_file_path();
-  printf("path: %s\n", path);
-  
-  FILE* f = fopen(path, "w");
-  if (!f) {
-    printf("opening the tmp file failed...\n");
-    return NULL;
-  }
-  char* buf = malloc(PAGE_SIZE*10);
-  memset(buf, 'A', PAGE_SIZE*10);
-  fwrite(buf, PAGE_SIZE*10, 1, f);
-  //fclose(f);
-  return path;
+    @autoreleasepool {
+        char* path = get_temp_file_path();
+        if (!path) {
+            return NULL;
+        }
+        
+        printf("path: %s\n", path);
+        
+        FILE* f = fopen(path, "w");
+        if (!f) {
+            printf("opening the tmp file failed...\n");
+            free(path);
+            return NULL;
+        }
+        
+        char* buf = malloc(PAGE_SIZE * 10);
+        if (!buf) {
+            fclose(f);
+            free(path);
+            return NULL;
+        }
+        
+        memset(buf, 'A', PAGE_SIZE * 10);
+        size_t written = fwrite(buf, 1, PAGE_SIZE * 10, f);
+        free(buf);
+        
+        if (written != PAGE_SIZE * 10) {
+            fclose(f);
+            free(path);
+            return NULL;
+        }
+        
+        fclose(f);
+        return path;
+    }
 }
 
 kern_return_t
@@ -55,53 +81,67 @@ mach_port_t get_send_once(mach_port_t recv) {
 // (in the exploit for this: https://googleprojectzero.blogspot.com/2019/04/splitting-atoms-in-xnu.html )
 
 void xpc_crasher(const char* service_name) {
-    xpc_connection_t connection = xpc_connection_create_mach_service(service_name, NULL, XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
-    if (!connection) {
-        NSLog(@"Failed to create connection to %s", service_name);
-        return;
+    @autoreleasepool {
+        xpc_connection_t connection = xpc_connection_create_mach_service(service_name, NULL, XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
+        if (!connection) {
+            NSLog(@"Failed to create connection to %s", service_name);
+            return;
+        }
+        
+        xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
+            // Do nothing
+        });
+        xpc_connection_resume(connection);
+        
+        xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
+        xpc_dictionary_set_string(message, "request", "crash");
+        xpc_connection_send_message(connection, message);
+        xpc_release(message);
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            xpc_release(connection);
+        });
     }
-    
-    xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
-        // Do nothing
-    });
-    xpc_connection_resume(connection);
-    
-    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
-    xpc_dictionary_set_string(message, "request", "crash");
-    xpc_connection_send_message(connection, message);
-    xpc_release(message);
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        xpc_release(connection);
-    });
 }
 
 bool overwrite_file(int fd, NSData* data) {
-    if (fd < 0) return false;
+    if (fd < 0 || !data) {
+        return false;
+    }
     
     off_t original_offset = lseek(fd, 0, SEEK_CUR);
-    if (original_offset == -1) return false;
+    if (original_offset == -1) {
+        return false;
+    }
     
-    if (lseek(fd, 0, SEEK_SET) == -1) return false;
+    if (lseek(fd, 0, SEEK_SET) == -1) {
+        return false;
+    }
     
-    size_t total_written = 0;
     const uint8_t* bytes = data.bytes;
+    size_t total_written = 0;
+    size_t length = data.length;
     
-    while (total_written < data.length) {
-        ssize_t written = write(fd, bytes + total_written, data.length - total_written);
+    while (total_written < length) {
+        ssize_t written = write(fd, bytes + total_written, length - total_written);
         if (written <= 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                continue;
+            }
             lseek(fd, original_offset, SEEK_SET);
             return false;
         }
         total_written += written;
     }
     
-    if (ftruncate(fd, data.length) == -1) {
+    if (ftruncate(fd, length) == -1) {
         lseek(fd, original_offset, SEEK_SET);
         return false;
     }
     
-    lseek(fd, original_offset, SEEK_SET);
+    if (lseek(fd, original_offset, SEEK_SET) == -1) {
+        return false;
+    }
+    
     return true;
 }
