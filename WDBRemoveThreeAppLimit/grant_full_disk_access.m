@@ -147,12 +147,6 @@ static uint64_t patchfind_got(void* executable_map, size_t executable_length,
 
 static bool patchfind(void* executable_map, size_t executable_length,
                       struct grant_full_disk_access_offsets* offsets) {
-  // Add iOS version check
-  if (@available(iOS 16.7.10, *)) {
-    // Use alternative method for iOS 16.7.10
-    return patchfind_ios16_7_10(executable_map, executable_length, offsets);
-  }
-  
   struct segment_command_64* data_const_segment = nil;
   struct symtab_command* symtab_command = nil;
   struct dysymtab_command* dysymtab_command = nil;
@@ -193,101 +187,57 @@ static bool patchfind(void* executable_map, size_t executable_length,
   return true;
 }
 
-static bool patchfind_ios16_7_10(void* executable_map, size_t executable_length,
-                               struct grant_full_disk_access_offsets* offsets) {
-    struct segment_command_64* data_const_segment = nil;
-    struct symtab_command* symtab_command = nil;
-    struct dysymtab_command* dysymtab_command = nil;
-    
-    if (!patchfind_sections(executable_map, &data_const_segment, &symtab_command,
-                           &dysymtab_command)) {
-        return false;
-    }
-    
-    // Updated offsets for iOS 16.7.10
-    if ((offsets->offset_addr_s_com_apple_tcc_ =
-         patchfind_pointer_to_string(executable_map, executable_length, "com.apple.tcc.")) == 0) {
-        return false;
-    }
-    
-    // Use alternative sandbox bypass for iOS 16.7.10
-    offsets->is_arm64e = true;  // Force ARM64e for 16.7.10
-    offsets->offset_padding_space_for_read_write_string = patchfind_get_padding(data_const_segment);
-    
-    // Updated sandbox initialization check
-    if ((offsets->offset_auth_got__sandbox_init =
-         patchfind_got(executable_map, executable_length, data_const_segment, symtab_command,
-                      dysymtab_command, "_sandbox_init")) == 0) {
-        return false;
-    }
-    
-    return true;
-}
-
 // MARK: - tccd patching
 
 static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
-    if (@available(iOS 16.7.10, *)) {
-        // Use NSXPCConnection for iOS 16.7.10
-        NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd" 
-                                                                             options:NSXPCConnectionPrivileged];
-        connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessRequest)];
-        [connection resume];
-        
-        [[connection remoteObjectProxy] requestAccessForService:@"com.apple.app-sandbox.read-write"
-                                                withPurpose:nil
-                                                preflight:NO
-                                                completion:^(NSString *token, NSError *error) {
-            completion(token);
-        }];
-    } else {
-        // Original implementation for older iOS versions
-        xpc_connection_t connection = xpc_connection_create_mach_service(
-            "com.apple.tccd", dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), 0);
-        xpc_connection_set_event_handler(connection, ^(xpc_object_t object) {
-            NSLog(@"xpc event handler: %@", object);
-        });
-        xpc_connection_resume(connection);
-        const char* keys[] = {
-            "TCCD_MSG_ID",  "function",           "service", "require_purpose", "preflight",
-            "target_token", "background_session",
-        };
-        xpc_object_t values[] = {
-            xpc_string_create("17087.1"),
-            xpc_string_create("TCCAccessRequest"),
-            xpc_string_create("com.apple.app-sandbox.read-write"),
-            xpc_null_create(),
-            xpc_bool_create(false),
-            xpc_null_create(),
-            xpc_bool_create(false),
-        };
-        xpc_object_t request_message = xpc_dictionary_create(keys, values, sizeof(keys) / sizeof(*keys));
+  // reimplmentation of TCCAccessRequest, as we need to grab and cache the sandbox token so we can
+  // re-use it until next reboot.
+  // Returns the sandbox token if there is one, or nil if there isn't one.
+  xpc_connection_t connection = xpc_connection_create_mach_service(
+      "com.apple.tccd", dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), 0);
+  xpc_connection_set_event_handler(connection, ^(xpc_object_t object) {
+    NSLog(@"xpc event handler: %@", object);
+  });
+  xpc_connection_resume(connection);
+  const char* keys[] = {
+      "TCCD_MSG_ID",  "function",           "service", "require_purpose", "preflight",
+      "target_token", "background_session",
+  };
+  xpc_object_t values[] = {
+      xpc_string_create("17087.1"),
+      xpc_string_create("TCCAccessRequest"),
+      xpc_string_create("com.apple.app-sandbox.read-write"),
+      xpc_null_create(),
+      xpc_bool_create(false),
+      xpc_null_create(),
+      xpc_bool_create(false),
+  };
+  xpc_object_t request_message = xpc_dictionary_create(keys, values, sizeof(keys) / sizeof(*keys));
 #if 0
-        xpc_object_t response_message = xpc_connection_send_message_with_reply_sync(connection, request_message);
-        NSLog(@"%@", response_message);
+  xpc_object_t response_message = xpc_connection_send_message_with_reply_sync(connection, request_message);
+  NSLog(@"%@", response_message);
 
 #endif
-        xpc_connection_send_message_with_reply(
-            connection, request_message, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-            ^(xpc_object_t object) {
-                if (!object) {
-                    NSLog(@"object is nil???");
-                    completion(nil);
-                    return;
-                }
-                NSLog(@"response: %@", object);
-                if ([object isKindOfClass:NSClassFromString(@"OS_xpc_error")]) {
-                    NSLog(@"xpc error?");
-                    completion(nil);
-                    return;
-                }
-                NSLog(@"debug description: %@", [object debugDescription]);
-                const char* extension_string = xpc_dictionary_get_string(object, "extension");
-                NSString* extension_nsstring =
-                    extension_string ? [NSString stringWithUTF8String:extension_string] : nil;
-                completion(extension_nsstring);
-            });
-    }
+  xpc_connection_send_message_with_reply(
+      connection, request_message, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+      ^(xpc_object_t object) {
+        if (!object) {
+          NSLog(@"object is nil???");
+          completion(nil);
+          return;
+        }
+        NSLog(@"response: %@", object);
+        if ([object isKindOfClass:NSClassFromString(@"OS_xpc_error")]) {
+          NSLog(@"xpc error?");
+          completion(nil);
+          return;
+        }
+        NSLog(@"debug description: %@", [object debugDescription]);
+        const char* extension_string = xpc_dictionary_get_string(object, "extension");
+        NSString* extension_nsstring =
+            extension_string ? [NSString stringWithUTF8String:extension_string] : nil;
+        completion(extension_nsstring);
+      });
 }
 
 static NSData* patchTCCD(void* executableMap, size_t executableLength) {
