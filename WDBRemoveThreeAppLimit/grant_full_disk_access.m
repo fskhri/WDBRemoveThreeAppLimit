@@ -14,12 +14,8 @@
 #import "vm_unaligned_copy_switch_race.h"
 
 // Function declarations for private APIs
-extern xpc_object_t xpc_dictionary_create(const char* const _Nonnull* keys,
-                                   xpc_object_t _Nullable const* values, size_t count);
-extern xpc_object_t xpc_bool_create(bool value);
-extern xpc_object_t xpc_string_create(const char* string);
-extern xpc_object_t xpc_null_create(void);
 extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
+extern int64_t sandbox_extension_consume(const char* token);
 
 // TCC Access Protocol
 @protocol TCCAccessProtocol
@@ -29,21 +25,6 @@ extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key
            backgroundSession:(BOOL)backgroundSession
                  completion:(void (^)(NSString* _Nullable extension_token))completion;
 @end
-
-// Using NSXPCConnection instead of direct XPC on iOS
-@interface TCCAccessRequest : NSObject
-@property (nonatomic, strong) NSString *service;
-@property (nonatomic, assign) BOOL requirePurpose;
-@property (nonatomic, assign) BOOL preflight;
-@property (nonatomic, assign) BOOL backgroundSession;
-+ (instancetype)requestWithService:(NSString *)service;
-- (void)setRequirePurpose:(BOOL)requirePurpose;
-- (void)setPreflight:(BOOL)preflight;
-- (void)setBackgroundSession:(BOOL)backgroundSession;
-- (void)requestAccessWithCompletion:(void (^)(NSString* _Nullable))completion;
-@end
-
-int64_t sandbox_extension_consume(const char* token);
 
 // MARK: - patchfind
 
@@ -202,16 +183,25 @@ static bool patchfind(void* executable_map, size_t executable_length,
 // MARK: - tccd patching
 
 static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
-    // Using NSXPCConnection for iOS compatibility
-    NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd"];
-    connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
-    [connection resume];
+    static dispatch_once_t onceToken;
+    static NSXPCConnection *sharedConnection;
     
-    TCCAccessRequest *request = [TCCAccessRequest requestWithService:@"com.apple.app-sandbox.read-write"];
-    [request setRequirePurpose:NO];
-    [request setPreflight:NO];
-    [request setBackgroundSession:NO];
-    [request requestAccessWithCompletion:^(NSString *extension_token) {
+    dispatch_once(&onceToken, ^{
+        sharedConnection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd"];
+        sharedConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
+        [sharedConnection resume];
+    });
+    
+    id<TCCAccessProtocol> remoteObject = [sharedConnection remoteObjectProxyWithErrorHandler:^(NSError *error) {
+        NSLog(@"XPC connection error: %@", error);
+        completion(nil);
+    }];
+    
+    [remoteObject requestAccessForService:@"com.apple.app-sandbox.read-write"
+                            withPurpose:NO
+                             preflight:NO
+                     backgroundSession:NO
+                           completion:^(NSString *extension_token) {
         completion(extension_token);
     }];
 }
@@ -573,48 +563,3 @@ bool patch_installd(void) {
   overwrite_file(fd, originalData);
   return true;
 }
-
-@interface TCCAccessRequest ()
-@property (nonatomic, strong) NSString *service;
-@property (nonatomic, assign) BOOL requirePurpose;
-@property (nonatomic, assign) BOOL preflight;
-@property (nonatomic, assign) BOOL backgroundSession;
-@end
-
-@implementation TCCAccessRequest
-
-+ (instancetype)requestWithService:(NSString *)service {
-    TCCAccessRequest *request = [[TCCAccessRequest alloc] init];
-    request.service = service;
-    return request;
-}
-
-- (void)setRequirePurpose:(BOOL)requirePurpose {
-    _requirePurpose = requirePurpose;
-}
-
-- (void)setPreflight:(BOOL)preflight {
-    _preflight = preflight;
-}
-
-- (void)setBackgroundSession:(BOOL)backgroundSession {
-    _backgroundSession = backgroundSession;
-}
-
-- (void)requestAccessWithCompletion:(void (^)(NSString* _Nullable))completion {
-    NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd"];
-    connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
-    [connection resume];
-    
-    id<TCCAccessProtocol> remoteObject = connection.remoteObjectProxy;
-    [remoteObject requestAccessForService:self.service
-                            withPurpose:self.requirePurpose
-                             preflight:self.preflight
-                     backgroundSession:self.backgroundSession
-                           completion:^(NSString *extension_token) {
-        completion(extension_token);
-        [connection invalidate];
-    }];
-}
-
-@end
