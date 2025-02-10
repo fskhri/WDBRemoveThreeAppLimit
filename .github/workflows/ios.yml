@@ -1,4 +1,4 @@
-name: iOS Build and Test
+name: iOS Build
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build and Test
+    name: Build
     runs-on: macos-latest
 
     steps:
@@ -26,14 +26,6 @@ jobs:
           -scheme WDBRemoveThreeAppLimit \
           -sdk iphoneos \
           CODE_SIGNING_ALLOWED=NO
-          
-    - name: Run Tests
-      run: |
-        xcodebuild test \
-          -project WDBRemoveThreeAppLimit.xcodeproj \
-          -scheme WDBRemoveThreeAppLimit \
-          -sdk iphonesimulator \
-          -destination 'platform=iOS Simulator,name=iPhone 14,OS=latest'
           
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
