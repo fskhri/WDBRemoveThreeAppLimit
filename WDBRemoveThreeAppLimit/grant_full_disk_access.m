@@ -320,24 +320,6 @@ static NSData* patchTCCD(void* executableMap, size_t executableLength) {
   return data;
 }
 
-static bool overwrite_file(int fd, NSData* sourceData) {
-  for (int off = 0; off < sourceData.length; off += 0x4000) {
-    bool success = false;
-    for (int i = 0; i < 2; i++) {
-      if (unaligned_copy_switch_race(
-              fd, off, sourceData.bytes + off,
-              off + 0x4000 > sourceData.length ? sourceData.length - off : 0x4000)) {
-        success = true;
-        break;
-      }
-    }
-    if (!success) {
-      return false;
-    }
-  }
-  return true;
-}
-
 static void grant_full_disk_access_impl(void (^completion)(NSString* extension_token,
                                                            NSError* _Nullable error)) {
   char* targetPath = "/System/Library/PrivateFrameworks/TCC.framework/Support/tccd";

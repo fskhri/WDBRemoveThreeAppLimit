@@ -7,6 +7,7 @@
 #import <sys/sysctl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 
 char* get_temp_file_path(void) {
     @autoreleasepool {
@@ -82,25 +83,43 @@ mach_port_t get_send_once(mach_port_t recv) {
 
 void xpc_crasher(const char* service_name) {
     @autoreleasepool {
-        xpc_connection_t connection = xpc_connection_create_mach_service(service_name, NULL, XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
-        if (!connection) {
-            NSLog(@"Failed to create connection to %s", service_name);
+        // On iOS, we'll use a different approach to restart services
+        pid_t pid = -1;
+        
+        // Get process ID
+        int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+        struct kinfo_proc *info;
+        size_t length;
+        int count;
+        
+        if (sysctl(mib, 4, NULL, &length, NULL, 0) < 0) {
             return;
         }
         
-        xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
-            // Do nothing
-        });
-        xpc_connection_resume(connection);
+        info = malloc(length);
+        if (!info) {
+            return;
+        }
         
-        xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
-        xpc_dictionary_set_string(message, "request", "crash");
-        xpc_connection_send_message(connection, message);
-        xpc_release(message);
+        if (sysctl(mib, 4, info, &length, NULL, 0) < 0) {
+            free(info);
+            return;
+        }
         
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            xpc_release(connection);
-        });
+        count = length / sizeof(struct kinfo_proc);
+        for (int i = 0; i < count; i++) {
+            if (strcmp(info[i].kp_proc.p_comm, service_name) == 0) {
+                pid = info[i].kp_proc.p_pid;
+                break;
+            }
+        }
+        
+        free(info);
+        
+        if (pid > 0) {
+            kill(pid, SIGTERM);
+            usleep(100000); // Wait 100ms
+        }
     }
 }
 
