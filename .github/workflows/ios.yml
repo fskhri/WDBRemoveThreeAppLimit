@@ -30,6 +30,11 @@ jobs:
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO \
           SWIFT_OPTIMIZATION_LEVEL="-Onone" \
+          CLANG_ENABLE_MODULES=YES \
+          SWIFT_ENFORCE_EXCLUSIVE_ACCESS=off \
+          GCC_OPTIMIZATION_LEVEL=0 \
+          ONLY_ACTIVE_ARCH=YES \
+          DEBUG_INFORMATION_FORMAT=dwarf \
           CONFIGURATION_BUILD_DIR=build/Release-iphoneos
           
     - name: List Build Directory
@@ -61,4 +66,9 @@ jobs:
           -scheme WDBRemoveThreeAppLimit \
           -sdk iphoneos \
           SWIFT_OPTIMIZATION_LEVEL="-Onone" \
+          CLANG_ENABLE_MODULES=YES \
+          SWIFT_ENFORCE_EXCLUSIVE_ACCESS=off \
+          GCC_OPTIMIZATION_LEVEL=0 \
+          ONLY_ACTIVE_ARCH=YES \
+          DEBUG_INFORMATION_FORMAT=dwarf \
           CODE_SIGNING_ALLOWED=NO 
