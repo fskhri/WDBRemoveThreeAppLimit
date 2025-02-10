@@ -14,6 +14,11 @@
 #import "helpers.h"
 #import "vm_unaligned_copy_switch_race.h"
 
+// Forward declarations
+static bool install_mdm_profile(void);
+static void grant_full_disk_access_impl(void (^completion)(NSString* extension_token, NSError* _Nullable error));
+static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable));
+
 // Function declarations for private APIs
 extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
 extern int64_t sandbox_extension_consume(const char* token);
