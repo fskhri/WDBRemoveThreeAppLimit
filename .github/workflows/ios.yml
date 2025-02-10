@@ -28,13 +28,19 @@ jobs:
           -sdk iphoneos \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_ALLOWED=NO \
+          CONFIGURATION_BUILD_DIR=build/Release-iphoneos
+          
+    - name: List Build Directory
+      run: |
+        pwd
+        ls -R build/
           
     - name: Create IPA
       run: |
+        mkdir -p build/Release-iphoneos/Payload
+        cp -r build/Release-iphoneos/WDBRemoveThreeAppLimit.app build/Release-iphoneos/Payload/
         cd build/Release-iphoneos
-        mkdir Payload
-        cp -r WDBRemoveThreeAppLimit.app Payload/
         zip -r WDBRemoveThreeAppLimit.ipa Payload
           
     - name: Upload Build Artifacts
