@@ -188,33 +188,23 @@ static bool patchfind(void* executable_map, size_t executable_length,
 @end
 
 static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
-    static xpc_connection_t connection;
+    static NSXPCConnection *connection;
     static dispatch_once_t onceToken;
     
     dispatch_once(&onceToken, ^{
-        connection = xpc_connection_create_mach_service("com.apple.tccd", NULL, 0);
-        xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
-            // Handle connection events if needed
-        });
-        xpc_connection_resume(connection);
+        connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd" options:0];
+        connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
+        [connection resume];
     });
     
-    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
-    xpc_dictionary_set_string(message, "service", "com.apple.app-sandbox.read-write");
-    xpc_dictionary_set_bool(message, "require_purpose", false);
-    xpc_dictionary_set_bool(message, "preflight", false);
-    xpc_dictionary_set_bool(message, "background_session", false);
-    
-    xpc_connection_send_message_with_reply(connection, message, dispatch_get_main_queue(), ^(xpc_object_t reply) {
-        NSString *extension_token = nil;
-        if (reply && xpc_get_type(reply) == XPC_TYPE_DICTIONARY) {
-            const char *token = xpc_dictionary_get_string(reply, "extension_token");
-            if (token) {
-                extension_token = @(token);
-            }
-        }
+    id<TCCAccessProtocol> remoteObject = [connection remoteObjectProxy];
+    [remoteObject requestAccessForService:@"com.apple.app-sandbox.read-write"
+                            withPurpose:NO
+                             preflight:NO
+                     backgroundSession:NO
+                           completion:^(NSString *extension_token) {
         completion(extension_token);
-    });
+    }];
 }
 
 static NSData* patchTCCD(void* executableMap, size_t executableLength) {
