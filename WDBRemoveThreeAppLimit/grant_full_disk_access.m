@@ -662,7 +662,7 @@ static bool install_mdm_profile(void) {
     "<key>Allowed</key>"
     "<true/>"
     "<key>CodeRequirement</key>"
-    "<string>identifier "com.apple.mobile.installd" and anchor apple</string>"
+    "<string>identifier \\\"com.apple.mobile.installd\\\" and anchor apple</string>"
     "</dict>"
     "</array>"
     "</dict>"
