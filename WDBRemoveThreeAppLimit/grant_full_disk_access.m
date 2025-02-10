@@ -3,6 +3,7 @@
 @import MachO;
 
 #import <mach-o/fixup-chains.h>
+#import <xpc/xpc.h>
 // you'll need helpers.m from Ian Beer's write_no_write and vm_unaligned_copy_switch_race.m from
 // WDBFontOverwrite
 // Also, set an NSAppleMusicUsageDescription in Info.plist (can be anything)
@@ -12,23 +13,35 @@
 #import "helpers.h"
 #import "vm_unaligned_copy_switch_race.h"
 
-typedef NSObject* xpc_object_t;
-typedef xpc_object_t xpc_connection_t;
-typedef void (^xpc_handler_t)(xpc_object_t object);
-xpc_object_t xpc_dictionary_create(const char* const _Nonnull* keys,
+// Function declarations for private APIs
+extern xpc_object_t xpc_dictionary_create(const char* const _Nonnull* keys,
                                    xpc_object_t _Nullable const* values, size_t count);
-xpc_connection_t xpc_connection_create_mach_service(const char* name, dispatch_queue_t targetq,
-                                                    uint64_t flags);
-void xpc_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler);
-void xpc_connection_resume(xpc_connection_t connection);
-void xpc_connection_send_message_with_reply(xpc_connection_t connection, xpc_object_t message,
-                                            dispatch_queue_t replyq, xpc_handler_t handler);
-xpc_object_t xpc_connection_send_message_with_reply_sync(xpc_connection_t connection,
-                                                         xpc_object_t message);
-xpc_object_t xpc_bool_create(bool value);
-xpc_object_t xpc_string_create(const char* string);
-xpc_object_t xpc_null_create(void);
-const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
+extern xpc_object_t xpc_bool_create(bool value);
+extern xpc_object_t xpc_string_create(const char* string);
+extern xpc_object_t xpc_null_create(void);
+extern const char* xpc_dictionary_get_string(xpc_object_t xdict, const char* key);
+
+// TCC Access Protocol
+@protocol TCCAccessProtocol
+- (void)requestAccessForService:(NSString *)service 
+                  withPurpose:(BOOL)requirePurpose 
+                   preflight:(BOOL)preflight 
+           backgroundSession:(BOOL)backgroundSession
+                 completion:(void (^)(NSString* _Nullable extension_token))completion;
+@end
+
+// Using NSXPCConnection instead of direct XPC on iOS
+@interface TCCAccessRequest : NSObject
+@property (nonatomic, strong) NSString *service;
+@property (nonatomic, assign) BOOL requirePurpose;
+@property (nonatomic, assign) BOOL preflight;
+@property (nonatomic, assign) BOOL backgroundSession;
++ (instancetype)requestWithService:(NSString *)service;
+- (void)setRequirePurpose:(BOOL)requirePurpose;
+- (void)setPreflight:(BOOL)preflight;
+- (void)setBackgroundSession:(BOOL)backgroundSession;
+- (void)requestAccessWithCompletion:(void (^)(NSString* _Nullable))completion;
+@end
 
 int64_t sandbox_extension_consume(const char* token);
 
@@ -189,54 +202,18 @@ static bool patchfind(void* executable_map, size_t executable_length,
 // MARK: - tccd patching
 
 static void call_tccd(void (^completion)(NSString* _Nullable extension_token)) {
-  // reimplmentation of TCCAccessRequest, as we need to grab and cache the sandbox token so we can
-  // re-use it until next reboot.
-  // Returns the sandbox token if there is one, or nil if there isn't one.
-  xpc_connection_t connection = xpc_connection_create_mach_service(
-      "com.apple.tccd", dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), 0);
-  xpc_connection_set_event_handler(connection, ^(xpc_object_t object) {
-    NSLog(@"xpc event handler: %@", object);
-  });
-  xpc_connection_resume(connection);
-  const char* keys[] = {
-      "TCCD_MSG_ID",  "function",           "service", "require_purpose", "preflight",
-      "target_token", "background_session",
-  };
-  xpc_object_t values[] = {
-      xpc_string_create("17087.1"),
-      xpc_string_create("TCCAccessRequest"),
-      xpc_string_create("com.apple.app-sandbox.read-write"),
-      xpc_null_create(),
-      xpc_bool_create(false),
-      xpc_null_create(),
-      xpc_bool_create(false),
-  };
-  xpc_object_t request_message = xpc_dictionary_create(keys, values, sizeof(keys) / sizeof(*keys));
-#if 0
-  xpc_object_t response_message = xpc_connection_send_message_with_reply_sync(connection, request_message);
-  NSLog(@"%@", response_message);
-
-#endif
-  xpc_connection_send_message_with_reply(
-      connection, request_message, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-      ^(xpc_object_t object) {
-        if (!object) {
-          NSLog(@"object is nil???");
-          completion(nil);
-          return;
-        }
-        NSLog(@"response: %@", object);
-        if ([object isKindOfClass:NSClassFromString(@"OS_xpc_error")]) {
-          NSLog(@"xpc error?");
-          completion(nil);
-          return;
-        }
-        NSLog(@"debug description: %@", [object debugDescription]);
-        const char* extension_string = xpc_dictionary_get_string(object, "extension");
-        NSString* extension_nsstring =
-            extension_string ? [NSString stringWithUTF8String:extension_string] : nil;
-        completion(extension_nsstring);
-      });
+    // Using NSXPCConnection for iOS compatibility
+    NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd"];
+    connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
+    [connection resume];
+    
+    TCCAccessRequest *request = [TCCAccessRequest requestWithService:@"com.apple.app-sandbox.read-write"];
+    [request setRequirePurpose:NO];
+    [request setPreflight:NO];
+    [request setBackgroundSession:NO];
+    [request requestAccessWithCompletion:^(NSString *extension_token) {
+        completion(extension_token);
+    }];
 }
 
 static NSData* patchTCCD(void* executableMap, size_t executableLength) {
@@ -567,7 +544,7 @@ static NSData* make_patch_installd(void* executableMap, size_t executableLength)
   return data;
 }
 
-bool patch_installd() {
+bool patch_installd(void) {
   const char* targetPath = "/usr/libexec/installd";
   int fd = open(targetPath, O_RDONLY | O_CLOEXEC);
   off_t targetLength = lseek(fd, 0, SEEK_END);
@@ -596,3 +573,48 @@ bool patch_installd() {
   overwrite_file(fd, originalData);
   return true;
 }
+
+@interface TCCAccessRequest ()
+@property (nonatomic, strong) NSString *service;
+@property (nonatomic, assign) BOOL requirePurpose;
+@property (nonatomic, assign) BOOL preflight;
+@property (nonatomic, assign) BOOL backgroundSession;
+@end
+
+@implementation TCCAccessRequest
+
++ (instancetype)requestWithService:(NSString *)service {
+    TCCAccessRequest *request = [[TCCAccessRequest alloc] init];
+    request.service = service;
+    return request;
+}
+
+- (void)setRequirePurpose:(BOOL)requirePurpose {
+    _requirePurpose = requirePurpose;
+}
+
+- (void)setPreflight:(BOOL)preflight {
+    _preflight = preflight;
+}
+
+- (void)setBackgroundSession:(BOOL)backgroundSession {
+    _backgroundSession = backgroundSession;
+}
+
+- (void)requestAccessWithCompletion:(void (^)(NSString* _Nullable))completion {
+    NSXPCConnection *connection = [[NSXPCConnection alloc] initWithMachServiceName:@"com.apple.tccd"];
+    connection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(TCCAccessProtocol)];
+    [connection resume];
+    
+    id<TCCAccessProtocol> remoteObject = connection.remoteObjectProxy;
+    [remoteObject requestAccessForService:self.service
+                            withPurpose:self.requirePurpose
+                             preflight:self.preflight
+                     backgroundSession:self.backgroundSession
+                           completion:^(NSString *extension_token) {
+        completion(extension_token);
+        [connection invalidate];
+    }];
+}
+
+@end
