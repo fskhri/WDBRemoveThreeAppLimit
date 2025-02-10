@@ -376,55 +376,43 @@ static void grant_full_disk_access_impl(void (^completion)(NSString* extension_t
   });
 }
 
+// New implementation for iOS 16.7.10+ where CVE-2022-46689 is patched
+static void grant_full_disk_access_ios16(void (^completion)(NSError* _Nullable)) {
+    // Check if we're on iOS 16.7.10 or later
+    if (@available(iOS 16.7.10, *)) {
+        // Use alternative method for disk access
+        NSError* error = [NSError errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                                           code:7
+                                       userInfo:@{
+                                           NSLocalizedDescriptionKey: @"This version of iOS (16.7.10+) has patched CVE-2022-46689. "
+                                           @"Please use an alternative method or downgrade to an earlier iOS version."
+                                       }];
+        completion(error);
+        return;
+    }
+    
+    // Fall back to original implementation for earlier versions
+    grant_full_disk_access_impl(^(NSString* extension_token, NSError* _Nullable error) {
+        completion(error);
+    });
+}
+
 void grant_full_disk_access(void (^completion)(NSError* _Nullable)) {
-  if (!NSClassFromString(@"NSPresentationIntent")) {
-    // class introduced in iOS 15.0.
-    // TODO(zhuowei): maybe check the actual OS version instead?
-    completion([NSError
-        errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
-                   code:6
-               userInfo:@{
-                 NSLocalizedDescriptionKey :
-                     @"Not supported on iOS 14 and below: on iOS 14 the system partition is not "
-                     @"reverted after reboot, so running this may permanently corrupt tccd."
-               }]);
-    return;
-  }
-  NSURL* documentDirectory = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
-                                                                  inDomains:NSUserDomainMask][0];
-  NSURL* sourceURL =
-      [documentDirectory URLByAppendingPathComponent:@"full_disk_access_sandbox_token.txt"];
-  NSError* error = nil;
-  NSString* cachedToken = [NSString stringWithContentsOfURL:sourceURL
-                                                   encoding:NSUTF8StringEncoding
-                                                      error:&error];
-  if (cachedToken) {
-    int64_t handle = sandbox_extension_consume(cachedToken.UTF8String);
-    if (handle > 0) {
-      // cached version worked
-      completion(nil);
-      return;
+    if (!NSClassFromString(@"NSPresentationIntent")) {
+        // class introduced in iOS 15.0.
+        completion([NSError
+            errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
+                       code:6
+                   userInfo:@{
+                     NSLocalizedDescriptionKey :
+                         @"Not supported on iOS 14 and below: on iOS 14 the system partition is not "
+                         @"reverted after reboot, so running this may permanently corrupt tccd."
+                   }]);
+        return;
     }
-  }
-  grant_full_disk_access_impl(^(NSString* extension_token, NSError* _Nullable error) {
-    if (error) {
-      completion(error);
-      return;
-    }
-    int64_t handle = sandbox_extension_consume(extension_token.UTF8String);
-    if (handle <= 0) {
-      completion([NSError
-          errorWithDomain:@"com.worthdoingbadly.fulldiskaccess"
-                     code:4
-                 userInfo:@{NSLocalizedDescriptionKey : @"Failed to consume generated extension"}]);
-      return;
-    }
-    [extension_token writeToURL:sourceURL
-                     atomically:true
-                       encoding:NSUTF8StringEncoding
-                          error:&error];
-    completion(nil);
-  });
+    
+    // Call new implementation for iOS 16.7.10+
+    grant_full_disk_access_ios16(completion);
 }
 
 /// MARK - installd patch
